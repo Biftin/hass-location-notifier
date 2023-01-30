@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/biftin/hass-location-notifier/internal/config"
+	"github.com/biftin/hass-location-notifier/pkg/hass-client"
 )
 
 func main() {
@@ -15,4 +17,14 @@ func main() {
 	}
 
 	fmt.Println(conf)
+
+	client, err := hassclient.Connect(context.Background(), conf.Hass.Server, conf.Hass.Token)
+	if err != nil {
+		fmt.Println("Error connecting websocket:", err)
+		os.Exit(1)
+	}
+
+	client.GetStates()
+
+	defer client.Close()
 }
