@@ -1,14 +1,35 @@
 package config
 
 import (
-	"gopkg.in/yaml.v3"
 	"os"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Hass      HassConfig
-	People    map[string]PersonConfig
-	Locations map[string]LocationConfig
+	People    []PersonConfig
+	Locations []LocationConfig
+}
+
+func (config *Config) FindPerson(id string) (*PersonConfig, bool) {
+	for _, person := range config.People {
+		if person.ID == id {
+			return &person, true
+		}
+	}
+
+	return nil, false
+}
+
+func (config *Config) FindLocation(id string) (*LocationConfig, bool) {
+	for _, location := range config.Locations {
+		if location.ID == id {
+			return &location, true
+		}
+	}
+
+	return nil, false
 }
 
 type HassConfig struct {
@@ -17,11 +38,13 @@ type HassConfig struct {
 }
 
 type PersonConfig struct {
+	ID                 string `yaml:"id"`
 	Name               string `yaml:"name"`
 	NotificationDevice string `yaml:"notification_device"`
 }
 
 type LocationConfig struct {
+	ID        string `yaml:"id"`
 	Name      string `yaml:"name"`
 	Owner     string `yaml:"owner"`
 	OwnerName string `yaml:"owner_name"`

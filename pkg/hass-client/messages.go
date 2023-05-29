@@ -16,6 +16,29 @@ type subscribeEventsRequest struct {
 	EventType string `json:"event_type"`
 }
 
+type callServiceRequest struct {
+	envelope
+	Domain  string `json:"domain"`
+	Service string `json:"service"`
+}
+
+type callServiceNotifyRequest struct {
+	callServiceRequest
+	ServiceData callServiceNotifyData `json:"service_data"`
+}
+
+type callServiceNotifyData struct {
+	Title   string                        `json:"title"`
+	Message string                        `json:"message"`
+	Data    callServiceNotifyPlatformData `json:"data"`
+}
+
+type callServiceNotifyPlatformData struct {
+	Group   string `json:"group,omitempty"`
+	Tag     string `json:"tag,omitempty"`
+	Channel string `json:"channel,omitempty"`
+}
+
 type eventMessage struct {
 	envelope
 	Event eventBody `json:"event"`

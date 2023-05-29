@@ -13,7 +13,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-var InvalidResponseError = errors.New("invalid response")
+var ErrInvalidResponse = errors.New("invalid response")
 
 type StateChange struct {
 	EntityId string
@@ -29,7 +29,7 @@ type HassClient struct {
 	eventCmdId           uint
 	eventSubscribers     []eventSubscriber
 	eventSubscribersLock sync.Mutex
-    
+
 	closed atomic.Bool
 
 	errorCh chan error
@@ -99,14 +99,50 @@ func (client *HassClient) SubscribeStateChanges() (<-chan StateChange, func()) {
 	}
 }
 
+type NotificationConfig struct {
+	Tag     string
+	Group   string
+	Channel string
+}
+
+func (client *HassClient) SendNotification(deviceId, title, message string, config NotificationConfig) error {
+	eventCmdId := client.nextCmdId()
+
+	// Send subscription request
+	err := client.sendJson(&callServiceNotifyRequest{
+		callServiceRequest: callServiceRequest{
+			envelope: envelope{
+				ID:   eventCmdId,
+				Type: "call_service",
+			},
+			Domain:  "notify",
+			Service: "mobile_app_" + deviceId,
+		},
+		ServiceData: callServiceNotifyData{
+			Title:   title,
+			Message: message,
+			Data: callServiceNotifyPlatformData{
+				Tag:     config.Tag,
+				Group:   config.Group,
+				Channel: config.Channel,
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (client *HassClient) Error() <-chan error {
 	return client.errorCh
 }
 
 func (client *HassClient) Close() {
-    if !client.closed.CompareAndSwap(false, true) {
-        return
-    }
+	if !client.closed.CompareAndSwap(false, true) {
+		return
+	}
 
 	client.eventSubscribersLock.Lock()
 	eventSubscribers := client.eventSubscribers
@@ -245,8 +281,8 @@ func (client *HassClient) subscribeStateChanges() error {
 			return err
 		}
 
-		if returnData.Success == nil || *returnData.Success == false {
-			return InvalidResponseError
+		if returnData.Success == nil || !*returnData.Success {
+			return ErrInvalidResponse
 		}
 	}
 
@@ -290,7 +326,8 @@ func (client *HassClient) handleIncoming() {
 				subscriber.dataCh <- StateChange{
 					EntityId: eventMessage.Event.Data.EntityID,
 					OldState: eventMessage.Event.Data.OldState.State,
-					NewState: eventMessage.Event.Data.NewState.State}
+					NewState: eventMessage.Event.Data.NewState.State,
+				}
 			}
 			client.eventSubscribersLock.Unlock()
 		}
