@@ -17,12 +17,11 @@ func main() {
 		log.Fatalln("Error loading config:", err)
 	}
 
-	client, err := hassclient.Connect(conf.Hass.Server, conf.Hass.Token)
+	client := hassclient.Connect(conf.Hass.Server, conf.Hass.Token)
 	if err != nil {
 		log.Fatalln("Error connecting websocket:", err)
 	}
 	defer client.Close()
-	log.Println("Connected to websocket API")
 
 	stateChanges, _ := client.SubscribeStateChanges()
 	for stateChange := range stateChanges {
@@ -69,10 +68,6 @@ func main() {
 				}
 			}
 		}
-	}
-
-	for err = range client.Error() {
-		log.Println("Websocket error:", err)
 	}
 }
 

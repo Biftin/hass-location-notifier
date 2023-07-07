@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -22,6 +20,11 @@ type StateChange struct {
 }
 
 type HassClient struct {
+	state clientState
+
+	url   string
+	token string
+
 	conn *websocket.Conn
 
 	cmdId uint
@@ -30,43 +33,36 @@ type HassClient struct {
 	eventSubscribers     []eventSubscriber
 	eventSubscribersLock sync.Mutex
 
-	closed atomic.Bool
-
-	errorCh chan error
+	readyCh  chan struct{}
+	cmdIdCh  chan uint
+	reconnCh chan struct{}
+	closeCh  chan struct{}
 }
 
-func Connect(server, token string) (*HassClient, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	c, _, err := websocket.Dial(ctx, server, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	c.SetReadLimit(512000000)
-
+func Connect(url, token string) *HassClient {
 	client := HassClient{
-		conn: c,
+		state: stateInitial,
+
+		url:   url,
+		token: token,
+
+		conn: nil,
 
 		cmdId: 2,
 
-		errorCh: make(chan error),
+		eventCmdId:           0,
+		eventSubscribers:     []eventSubscriber{},
+		eventSubscribersLock: sync.Mutex{},
+
+		readyCh:  make(chan struct{}),
+		cmdIdCh:  make(chan uint),
+		reconnCh: make(chan struct{}),
+		closeCh:  make(chan struct{}),
 	}
 
-	err = client.authenticate(token)
-	if err != nil {
-		return nil, err
-	}
+	go client.startWorker()
 
-	err = client.subscribeStateChanges()
-	if err != nil {
-		return nil, err
-	}
-
-	go client.handleIncoming()
-
-	return &client, nil
+	return &client
 }
 
 func (client *HassClient) SubscribeStateChanges() (<-chan StateChange, func()) {
@@ -88,7 +84,10 @@ func (client *HassClient) SubscribeStateChanges() (<-chan StateChange, func()) {
 
 		for i, other := range client.eventSubscribers {
 			if other == subscription {
-				client.eventSubscribers = append(client.eventSubscribers[:i], client.eventSubscribers[i+1:]...)
+				client.eventSubscribers = append(
+					client.eventSubscribers[:i],
+					client.eventSubscribers[i+1:]...,
+				)
 				break
 			}
 		}
@@ -106,7 +105,10 @@ type NotificationConfig struct {
 }
 
 func (client *HassClient) SendNotification(deviceId, title, message string, config NotificationConfig) error {
-	eventCmdId := client.nextCmdId()
+	eventCmdId, ok := <-client.cmdIdCh
+	if !ok {
+		return errors.New("client closed")
+	}
 
 	// Send subscription request
 	err := client.sendJson(&callServiceNotifyRequest{
@@ -135,26 +137,141 @@ func (client *HassClient) SendNotification(deviceId, title, message string, conf
 	return nil
 }
 
-func (client *HassClient) Error() <-chan error {
-	return client.errorCh
-}
-
 func (client *HassClient) Close() {
-	if !client.closed.CompareAndSwap(false, true) {
+	if !client.waitReady() {
 		return
 	}
 
-	client.eventSubscribersLock.Lock()
-	eventSubscribers := client.eventSubscribers
-	client.eventSubscribers = []eventSubscriber{}
-	client.eventSubscribersLock.Unlock()
+	client.closeCh <- struct{}{}
+}
 
-	for _, subscriber := range eventSubscribers {
-		close(subscriber.dataCh)
+type clientState int
+
+const (
+	stateInitial clientState = iota
+	stateConnecting
+	stateReady
+	stateClosed
+)
+
+func (client *HassClient) startWorker() {
+	for {
+		if client.state == stateInitial || client.state == stateConnecting {
+			log.Println("connecting to home assistant...")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			conn, _, err := websocket.Dial(ctx, client.url, nil)
+			cancel()
+			if err != nil {
+				log.Println("error: connect:", err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			conn.SetReadLimit(512000000)
+
+			client.conn = conn
+
+			err = client.authenticate(client.token)
+			if err != nil {
+				log.Println("error: authenticate:", err)
+				conn.Close(websocket.StatusNormalClosure, "")
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			err = client.subscribeStateChanges()
+			if err != nil {
+				log.Println("error: subscribe state changes:", err)
+				conn.Close(websocket.StatusNormalClosure, "")
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			log.Println("connection successful")
+
+			go client.startReadWorker()
+			client.state = stateReady
+		}
+
+		if client.state == stateReady {
+			select {
+			case client.readyCh <- struct{}{}:
+			case client.cmdIdCh <- client.nextCmdId():
+			case <-client.reconnCh:
+				log.Println("connection lost, trying to reconnect...")
+				client.state = stateConnecting
+			case <-client.closeCh:
+				log.Println("closing connection...")
+				client.state = stateClosed
+			}
+		}
+
+		if client.state == stateClosed {
+			client.conn.Close(websocket.StatusNormalClosure, "")
+			client.eventSubscribersLock.Lock()
+			for _, eventSub := range client.eventSubscribers {
+				close(eventSub.dataCh)
+			}
+			close(client.readyCh)
+			close(client.cmdIdCh)
+			client.eventSubscribersLock.Unlock()
+			break
+		}
 	}
 
-	close(client.errorCh)
-	client.conn.Close(websocket.StatusNormalClosure, "")
+	log.Println("connection closed")
+}
+
+func (client *HassClient) waitReady() bool {
+	_, ok := <-client.readyCh
+	return ok
+}
+
+func (client *HassClient) startReadWorker() {
+	for {
+		if !client.waitReady() {
+			return
+		}
+
+		data, err := client.readData()
+		if err != nil {
+			log.Println("error: read websocket data:", err)
+			break
+		}
+
+		var envelope envelope
+		err = json.Unmarshal(data, &envelope)
+		if err != nil {
+			log.Println("error: parse json data:", err)
+			continue
+		}
+
+		if envelope.ID == client.eventCmdId {
+			if envelope.Type != "event" {
+				log.Println("error: invalid message type:", envelope.Type)
+				continue
+			}
+
+			var eventMessage eventMessage
+			err = json.Unmarshal(data, &eventMessage)
+			if err != nil {
+				log.Println("error: failed to read event message:", err)
+				continue
+			}
+
+			client.eventSubscribersLock.Lock()
+			for _, subscriber := range client.eventSubscribers {
+				subscriber.dataCh <- StateChange{
+					EntityId: eventMessage.Event.Data.EntityID,
+					OldState: eventMessage.Event.Data.OldState.State,
+					NewState: eventMessage.Event.Data.NewState.State,
+				}
+			}
+			client.eventSubscribersLock.Unlock()
+		}
+	}
+
+	client.reconnCh <- struct{}{}
 }
 
 type eventSubscriber struct {
@@ -289,55 +406,4 @@ func (client *HassClient) subscribeStateChanges() error {
 	client.eventCmdId = eventCmdId
 
 	return nil
-}
-
-func (client *HassClient) handleIncoming() {
-	for {
-		data, err := client.readData()
-		if err != nil {
-			client.writeError(fmt.Errorf("read websocket data: %s", err))
-			client.Close()
-			return
-			// TODO: reconnect
-		}
-
-		var envelope envelope
-		err = json.Unmarshal(data, &envelope)
-		if err != nil {
-			client.writeError(fmt.Errorf("parse json data: %s", err))
-			continue
-		}
-
-		if envelope.ID == client.eventCmdId {
-			if envelope.Type != "event" {
-				client.writeError(fmt.Errorf("invalid message type '%s'", envelope.Type))
-				continue
-			}
-
-			var eventMessage eventMessage
-			err = json.Unmarshal(data, &eventMessage)
-			if err != nil {
-				client.writeError(fmt.Errorf("failed to read event message: %s", err))
-				continue
-			}
-
-			client.eventSubscribersLock.Lock()
-			for _, subscriber := range client.eventSubscribers {
-				subscriber.dataCh <- StateChange{
-					EntityId: eventMessage.Event.Data.EntityID,
-					OldState: eventMessage.Event.Data.OldState.State,
-					NewState: eventMessage.Event.Data.NewState.State,
-				}
-			}
-			client.eventSubscribersLock.Unlock()
-		}
-	}
-}
-
-func (client *HassClient) writeError(err error) {
-	select {
-	case client.errorCh <- err:
-	default:
-		log.Println(err)
-	}
 }
