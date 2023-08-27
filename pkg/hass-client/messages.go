@@ -33,10 +33,26 @@ type callServiceNotifyData struct {
 	Data    callServiceNotifyPlatformData `json:"data"`
 }
 
+type interruptionLevel string;
+
+const (
+	interruptionLevelPassive       = interruptionLevel("passive")
+	interruptionLevelActive        = interruptionLevel("active")
+	interruptionLevelTimeSensitive = interruptionLevel("time-sensitive")
+	interruptionLevelCritical      = interruptionLevel("critical")
+)
+
 type callServiceNotifyPlatformData struct {
-	Group   string `json:"group,omitempty"`
-	Tag     string `json:"tag,omitempty"`
-	Channel string `json:"channel,omitempty"`
+	Group   string                            `json:"group,omitempty"`
+	Tag     string                            `json:"tag,omitempty"`
+	Channel string                            `json:"channel,omitempty"`
+	Push    callServiceNotifyPlatformPushData `json:"push,omitempty"`
+}
+
+type callServiceNotifyPlatformPushData struct {
+	Sound             string            `json:"sound,omitempty"`
+	Badge             uint              `json:"badge,omitempty"`
+	InterruptionLevel interruptionLevel `json:"interruption-level,omitempty"`
 }
 
 type eventMessage struct {
