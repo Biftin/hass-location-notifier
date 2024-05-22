@@ -127,8 +127,8 @@ func (client *HassClient) SendNotification(deviceId, title, message string, conf
 				Tag:     config.Tag,
 				Group:   config.Group,
 				Channel: config.Channel,
-				Push:    callServiceNotifyPlatformPushData{
-					InterruptionLevel: interruptionLevelPassive,
+				Push: callServiceNotifyPlatformPushData{
+					InterruptionLevel: interruptionLevelActive,
 				},
 			},
 		},
