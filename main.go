@@ -62,9 +62,13 @@ func main() {
 				notificationConfig.Tag = "family-location-" + personId
 
 				if receiver.ID == personId {
-					client.SendNotification(receiver.NotificationDevice, person.Name, selfMessage, notificationConfig)
+					err = client.SendNotification(receiver.NotificationDevice, person.Name, selfMessage, notificationConfig)
 				} else {
-					client.SendNotification(receiver.NotificationDevice, person.Name, message, notificationConfig)
+					err = client.SendNotification(receiver.NotificationDevice, person.Name, message, notificationConfig)
+				}
+
+				if err != nil {
+					log.Printf("Error: sending notification: %v", err)
 				}
 			}
 		}
