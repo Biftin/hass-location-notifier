@@ -7,9 +7,19 @@ import (
 )
 
 type Config struct {
-	Hass      HassConfig
-	People    []PersonConfig
-	Locations []LocationConfig
+	Hass      HassConfig     `yaml:"hass"`
+	People    []PersonConfig `yaml:"people"`
+	Templates struct {
+		Arrive struct {
+			You   string `yaml:"you"`
+			Other string `yaml:"other"`
+		} `yaml:"arrive"`
+		Leave struct {
+			You   string `yaml:"you"`
+			Other string `yaml:"other"`
+		} `yaml:"leave"`
+	} `yaml:"templates"`
+	Locations []LocationConfig `yaml:"locations"`
 }
 
 func (config *Config) FindPerson(id string) (*PersonConfig, bool) {
@@ -44,10 +54,12 @@ type PersonConfig struct {
 }
 
 type LocationConfig struct {
-	ID        string `yaml:"id"`
-	Name      string `yaml:"name"`
-	Owner     string `yaml:"owner"`
-	OwnerName string `yaml:"owner_name"`
+	ID    string `yaml:"id"`
+	Name  string `yaml:"name"`
+	Texts struct {
+		Arrive string `yaml:"arrive"`
+		Leave  string `yaml:"leave"`
+	} `yaml:"texts"`
 }
 
 func LoadConfig(fileName string) (*Config, error) {
